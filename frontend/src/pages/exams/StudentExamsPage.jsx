@@ -17,22 +17,6 @@ export default function StudentExamsPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [activeExam, setActiveExam] = useState(null);
   const [showInstructionsModal, setShowInstructionsModal] = useState(null);
-  const [showScheduleModal, setShowScheduleModal] = useState(false);
-
-  // Form state for scheduling MST/Assignment
-  const [scheduleForm, setScheduleForm] = useState({
-    courseId: "",
-    title: "",
-    description: "",
-    type: "coding",
-    isMst: true,
-    startTime: "",
-    endTime: "",
-    durationMinutes: 90,
-    maxScore: 50,
-    isProctored: true
-  });
-  const [scheduleStatus, setScheduleStatus] = useState({ loading: false, success: "", error: "" });
 
   async function loadExamsFromDatabase() {
     setLoading(true);
@@ -43,78 +27,21 @@ export default function StudentExamsPage() {
         return;
       }
 
-      const coursesData = await apiRequest("/courses", {}, activeSession.token);
-      const fetchedCourses = Array.isArray(coursesData) ? coursesData : [];
-      setCourses(fetchedCourses);
-
-      const fetchedExams = [];
-
-      for (const course of fetchedCourses) {
-        try {
-          const assignments = await apiRequest(`/courses/${course.id}/assignments`, {}, activeSession.token);
-          if (Array.isArray(assignments)) {
-            for (const item of assignments) {
-              const now = new Date();
-              const start = item.startTime ? new Date(item.startTime) : (item.dueDate ? new Date(item.dueDate) : null);
-              const end = item.endTime ? new Date(item.endTime) : (item.dueDate ? new Date(item.dueDate) : null);
-
-              const isMst = item.isMst || item.title.toLowerCase().includes("mst") || item.title.toLowerCase().includes("mid-semester");
-              const isQuiz = item.title.toLowerCase().includes("quiz") || item.title.toLowerCase().includes("unit");
-
-              const submission = item.submissions?.[0] || null;
-              const isCompleted = submission && (submission.status === "graded" || submission.status === "submitted");
-
-              let status = "upcoming";
-              if (isCompleted) {
-                status = "completed";
-              } else if (start && end) {
-                if (now >= start && now <= end) {
-                  status = "live";
-                } else if (now > end) {
-                  status = "completed";
-                } else {
-                  status = "upcoming";
-                }
-              } else if (end && now <= end) {
-                status = "live";
-              }
-
-              fetchedExams.push({
-                id: item.id,
-                courseId: course.id,
-                type: isMst ? "mst" : isQuiz ? "quiz" : "assignment",
-                isMst: Boolean(isMst),
-                title: item.title,
-                description: item.description || "Official institutional paper.",
-                courseCode: course.code || "COURSE",
-                courseTitle: course.title || "Course",
-                instructor: course.instructors?.[0]?.full_name || course.instructor_name || "Faculty Instructor",
-                status,
-                startRaw: start,
-                endRaw: end,
-                startTime: start ? start.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "Scheduled",
-                endTime: end ? end.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "TBA",
-                durationMinutes: item.durationMinutes || 90,
-                totalMarks: item.maxScore || 100,
-                targetBatch: item.targetBatch || item.target_batch || "ALL",
-                targetYear: item.targetYear || item.target_year || "ALL",
-                score: submission?.grade ?? null,
-                submittedAt: submission?.submittedAt ? new Date(submission.submittedAt).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : null,
-                proctored: item.isProctored !== undefined ? item.isProctored : true,
-                instructions: [
-                  "Ensure a stable internet connection before starting the examination.",
-                  "Full-screen tab switching is monitored. Do not exit full-screen during timed paper.",
-                  "Your code submissions and answers are auto-saved and recorded directly in the server database."
-                ]
-              });
-            }
-          }
-        } catch (err) {
-          console.warn(`Could not fetch assignments for course ${course.id}:`, err);
-        }
-      }
+      const data = await apiRequest("/assignments/student/exams", {}, activeSession.token);
+      const fetchedExams = Array.isArray(data?.exams)
+        ? data.exams.map((item) => {
+            const start = item.startRaw ? new Date(item.startRaw) : (item.startTime && item.startTime !== "Scheduled" ? new Date(item.startTime) : null);
+            const end = item.endRaw ? new Date(item.endRaw) : (item.endTime && item.endTime !== "TBA" ? new Date(item.endTime) : null);
+            return {
+              ...item,
+              startRaw: start,
+              endRaw: end
+            };
+          })
+        : [];
 
       setExams(fetchedExams);
+      setCourses(Array.isArray(data?.courses) ? data.courses : []);
     } catch (err) {
       console.error("Failed to load database exams:", err);
       setError(err.message || "Failed to load examination schedule from server.");
@@ -126,56 +53,6 @@ export default function StudentExamsPage() {
   useEffect(() => {
     loadExamsFromDatabase();
   }, [activeSession?.token]);
-
-  async function handleScheduleSubmit(e) {
-    e.preventDefault();
-    setScheduleStatus({ loading: true, success: "", error: "" });
-
-    if (!scheduleForm.courseId) {
-      setScheduleStatus({ loading: false, success: "", error: "Please select a course for the MST / Assignment." });
-      return;
-    }
-
-    try {
-      await apiRequest(
-        `/courses/${scheduleForm.courseId}/assignments`,
-        {
-          method: "POST",
-          body: JSON.stringify({
-            title: scheduleForm.title,
-            description: scheduleForm.description,
-            type: scheduleForm.type,
-            startTime: scheduleForm.startTime ? new Date(scheduleForm.startTime).toISOString() : null,
-            endTime: scheduleForm.endTime ? new Date(scheduleForm.endTime).toISOString() : null,
-            dueDate: scheduleForm.endTime ? new Date(scheduleForm.endTime).toISOString() : null,
-            durationMinutes: Number(scheduleForm.durationMinutes),
-            maxScore: Number(scheduleForm.maxScore),
-            isMst: scheduleForm.isMst,
-            isProctored: scheduleForm.isProctored
-          })
-        },
-        activeSession.token
-      );
-
-      setScheduleStatus({ loading: false, success: "Examination paper / MST scheduled successfully!", error: "" });
-      setShowScheduleModal(false);
-      setScheduleForm({
-        courseId: "",
-        title: "",
-        description: "",
-        type: "coding",
-        isMst: true,
-        startTime: "",
-        endTime: "",
-        durationMinutes: 90,
-        maxScore: 50,
-        isProctored: true
-      });
-      loadExamsFromDatabase();
-    } catch (err) {
-      setScheduleStatus({ loading: false, success: "", error: err.message });
-    }
-  }
 
   const filteredExams = exams.filter((exam) => {
     if (filterTab === "mst" && !exam.isMst && exam.type !== "mst") return false;
@@ -263,32 +140,6 @@ export default function StudentExamsPage() {
           </div>
 
           <div style={{ display: "flex", gap: "1rem", alignItems: "center" }}>
-            {/* Admin or Faculty Add Action Button */}
-            {(userRole === "admin" || userRole === "faculty") && (
-              <button
-                onClick={() => setShowScheduleModal(true)}
-                style={{
-                  background: "#ff7e29",
-                  color: "#fff",
-                  border: "none",
-                  borderRadius: "10px",
-                  padding: "0.75rem 1.25rem",
-                  fontWeight: 700,
-                  fontSize: "0.9rem",
-                  cursor: "pointer",
-                  boxShadow: "0 4px 14px rgba(255, 126, 41, 0.3)",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem"
-                }}
-              >
-                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
-                  <line x1="12" y1="5" x2="12" y2="19" />
-                  <line x1="5" y1="12" x2="19" y2="12" />
-                </svg>
-                {userRole === "admin" ? "+ Schedule MST Exam" : "+ Add Course Assignment"}
-              </button>
-            )}
 
             <div style={{
               background: "var(--lc-card-bg)",
@@ -357,21 +208,7 @@ export default function StudentExamsPage() {
           </div>
 
           <div style={{ display: "flex", gap: "0.75rem", alignItems: "center" }}>
-            <button
-              onClick={loadExamsFromDatabase}
-              style={{
-                background: "rgba(255, 255, 255, 0.08)",
-                color: "var(--lc-text-primary)",
-                border: "1px solid var(--lc-border)",
-                borderRadius: "8px",
-                padding: "0.45rem 0.85rem",
-                fontSize: "0.85rem",
-                cursor: "pointer"
-              }}
-            >
-              🔄 Refresh DB
-            </button>
-            <div style={{ width: "220px" }}>
+            <div style={{ width: "240px" }}>
               <input
                 type="text"
                 placeholder="Search paper or course..."
@@ -662,192 +499,6 @@ export default function StudentExamsPage() {
                 </div>
               );
             })}
-          </div>
-        )}
-
-        {/* Admin / Faculty Schedule MST Modal */}
-        {showScheduleModal && (
-          <div style={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            background: "rgba(0, 0, 0, 0.8)",
-            backdropFilter: "blur(6px)",
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            zIndex: 9999,
-            padding: "1.5rem"
-          }}>
-            <div style={{
-              background: "var(--lc-card-bg)",
-              border: "1px solid var(--lc-border)",
-              borderRadius: "16px",
-              padding: "2rem",
-              maxWidth: "560px",
-              width: "100%",
-              maxHeight: "90vh",
-              overflowY: "auto"
-            }}>
-              <h2 style={{ fontSize: "1.4rem", fontWeight: 800, marginBottom: "0.25rem", color: "var(--lc-text-primary)" }}>
-                {userRole === "admin" ? "Schedule Institutional MST Exam" : "Add Course Assignment"}
-              </h2>
-              <p style={{ fontSize: "0.85rem", color: "var(--lc-text-muted)", marginBottom: "1.5rem" }}>
-                Set official Start Date/Time, End Date/Time, Duration, and Anti-cheat proctoring.
-              </p>
-
-              {scheduleStatus.error && (
-                <div className="lc-error-banner" style={{ marginBottom: "1rem" }}>
-                  <span>{scheduleStatus.error}</span>
-                </div>
-              )}
-
-              <form onSubmit={handleScheduleSubmit}>
-                {/* Select Course */}
-                <div className="lc-form-group" style={{ marginBottom: "1rem" }}>
-                  <label className="lc-input-label">Select Course</label>
-                  <select
-                    className="lc-form-input"
-                    value={scheduleForm.courseId}
-                    onChange={(e) => setScheduleForm({ ...scheduleForm, courseId: e.target.value })}
-                    required
-                  >
-                    <option value="">-- Choose Course --</option>
-                    {courses.map((c) => (
-                      <option key={c.id} value={c.id}>
-                        {c.code}: {c.title}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                {/* Exam Title */}
-                <div className="lc-form-group" style={{ marginBottom: "1rem" }}>
-                  <label className="lc-input-label">Exam Title</label>
-                  <input
-                    type="text"
-                    placeholder="e.g. Mid-Semester Examination 1 (MST-1)"
-                    className="lc-form-input"
-                    value={scheduleForm.title}
-                    onChange={(e) => setScheduleForm({ ...scheduleForm, title: e.target.value })}
-                    required
-                  />
-                </div>
-
-                {/* Description */}
-                <div className="lc-form-group" style={{ marginBottom: "1rem" }}>
-                  <label className="lc-input-label">Description / Topics Covered</label>
-                  <textarea
-                    placeholder="e.g. Covers Arrays, Linked Lists, and Stacks."
-                    className="lc-form-input"
-                    rows="2"
-                    value={scheduleForm.description}
-                    onChange={(e) => setScheduleForm({ ...scheduleForm, description: e.target.value })}
-                  />
-                </div>
-
-                {/* Start Time & End Time */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-                  <div className="lc-form-group">
-                    <label className="lc-input-label">Start Date & Time (When to Start)</label>
-                    <input
-                      type="datetime-local"
-                      className="lc-form-input"
-                      value={scheduleForm.startTime}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div className="lc-form-group">
-                    <label className="lc-input-label">End Date & Time (When to End)</label>
-                    <input
-                      type="datetime-local"
-                      className="lc-form-input"
-                      value={scheduleForm.endTime}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })}
-                      required
-                    />
-                  </div>
-                </div>
-
-                {/* Duration & Max Score */}
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
-                  <div className="lc-form-group">
-                    <label className="lc-input-label">Duration (Minutes)</label>
-                    <input
-                      type="number"
-                      min="15"
-                      max="300"
-                      className="lc-form-input"
-                      value={scheduleForm.durationMinutes}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, durationMinutes: e.target.value })}
-                      required
-                    />
-                  </div>
-                  <div className="lc-form-group">
-                    <label className="lc-input-label">Total Marks</label>
-                    <input
-                      type="number"
-                      min="10"
-                      max="200"
-                      className="lc-form-input"
-                      value={scheduleForm.maxScore}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, maxScore: e.target.value })}
-                      required
-                    />
-                  </div>
-                </div>
-
-                {/* Anti-Cheat Proctoring Checkbox */}
-                <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1.5rem" }}>
-                  <input
-                    type="checkbox"
-                    id="proctored"
-                    checked={scheduleForm.isProctored}
-                    onChange={(e) => setScheduleForm({ ...scheduleForm, isProctored: e.target.checked })}
-                  />
-                  <label htmlFor="proctored" style={{ fontSize: "0.85rem", color: "var(--lc-text-primary)", cursor: "pointer" }}>
-                    Enable Full-Screen Anti-Cheat & Tab-Switching Proctoring
-                  </label>
-                </div>
-
-                <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.75rem" }}>
-                  <button
-                    type="button"
-                    onClick={() => setShowScheduleModal(false)}
-                    style={{
-                      background: "rgba(255, 255, 255, 0.1)",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: "8px",
-                      padding: "0.6rem 1.2rem",
-                      cursor: "pointer",
-                      fontSize: "0.85rem"
-                    }}
-                  >
-                    Cancel
-                  </button>
-                  <button
-                    type="submit"
-                    disabled={scheduleStatus.loading}
-                    style={{
-                      background: "#ff7e29",
-                      color: "#fff",
-                      border: "none",
-                      borderRadius: "8px",
-                      padding: "0.6rem 1.4rem",
-                      fontWeight: 700,
-                      cursor: "pointer",
-                      fontSize: "0.85rem"
-                    }}
-                  >
-                    {scheduleStatus.loading ? "Scheduling..." : "Schedule Examination"}
-                  </button>
-                </div>
-              </form>
-            </div>
           </div>
         )}
 

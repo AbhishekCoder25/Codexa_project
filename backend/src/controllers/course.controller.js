@@ -90,6 +90,15 @@ async function buildCourseCard(client, courseId, currentUser) {
   const batchTargets = [...new Set(audiences.map((row) => row.batch))];
   const counts = countsResult.rows[0];
 
+  let isEnrolled = false;
+  if (currentUser?.role === "student" && currentUser?.id) {
+    const enrollRes = await client.query(
+      `SELECT 1 FROM course_enrollments WHERE course_id = $1 AND student_id = $2 AND status = 'enrolled'`,
+      [courseId, currentUser.id]
+    );
+    isEnrolled = enrollRes.rows.length > 0;
+  }
+
   return {
     id: courseId,
     code: courseResult.rows[0].code,
@@ -108,6 +117,7 @@ async function buildCourseCard(client, courseId, currentUser) {
     codingProblemsCount: counts.coding_problems_count,
     assignmentCount: counts.assignment_count,
     enrolledCount: counts.enrolled_count,
+    isEnrolled,
     isActive: courseResult.rows[0].is_active,
     canManage:
       currentUser?.role === "admin" ||
@@ -189,7 +199,20 @@ function mapAssignmentRow(row, includeSubmissionDetails = false) {
     dueDate: row.due_date,
     startTime: row.start_time,
     endTime: row.end_time,
-    durationMinutes: row.duration_minutes,
+    durationMinutes: (() => {
+      let duration = row.duration_minutes;
+      if (row.start_time && row.end_time) {
+        const s = new Date(row.start_time).getTime();
+        const e = new Date(row.end_time).getTime();
+        if (!isNaN(s) && !isNaN(e) && e > s) {
+          const diff = Math.round((e - s) / 60000);
+          if (row.is_mst || !duration || duration === 90) {
+            return diff;
+          }
+        }
+      }
+      return duration || 90;
+    })(),
     isMst: row.is_mst,
     isProctored: row.is_proctored,
     maxScore: row.max_score,
@@ -423,6 +446,7 @@ export const deleteCourse = asyncHandler(async (req, res) => {
 
 export const listCourses = asyncHandler(async (req, res) => {
   const search = req.query.search?.trim() ?? "";
+  const enrolledOnly = req.query.enrolledOnly === "true" || req.query.enrolled === "true";
   const values = [];
   const filters = ["c.is_active = TRUE"];
 
@@ -431,47 +455,71 @@ export const listCourses = asyncHandler(async (req, res) => {
     filters.push(`EXISTS (SELECT 1 FROM course_faculty cf WHERE cf.course_id = c.id AND cf.faculty_id = $${values.length})`);
   }
 
-  if (req.currentUser.role === "student" && req.roleProfile) {
-    const studentBranch = (req.roleProfile.branch || "").trim().toUpperCase();
-    const studentSem = Number(req.roleProfile.semester) || 1;
-    const studentSec = (req.roleProfile.section || "").trim().toUpperCase();
-    const studentBatch = (req.roleProfile.batch || "").trim();
+  if (req.currentUser.role === "student") {
+    values.push(req.currentUser.id);
+    const studentIdIndex = values.length;
 
-    values.push(
-      studentBranch,
-      studentSem,
-      studentSec,
-      studentBatch,
-      req.currentUser.id
-    );
-
-    filters.push(
-      `(
-        EXISTS (
+    if (enrolledOnly) {
+      filters.push(
+        `EXISTS (
           SELECT 1
           FROM course_enrollments ce
           WHERE ce.course_id = c.id
-            AND ce.student_id = $${values.length}
+            AND ce.student_id = $${studentIdIndex}
             AND ce.status = 'enrolled'
-        )
-        OR
-        EXISTS (
+        )`
+      );
+    } else if (req.roleProfile) {
+      const studentBranch = (req.roleProfile.branch || "").trim().toUpperCase();
+      const studentSem = Number(req.roleProfile.semester) || 1;
+      const studentSec = (req.roleProfile.section || "").trim().toUpperCase();
+      const studentBatch = (req.roleProfile.batch || "").trim();
+
+      values.push(
+        studentBranch,
+        studentSem,
+        studentSec,
+        studentBatch
+      );
+
+      filters.push(
+        `(
+          EXISTS (
+            SELECT 1
+            FROM course_enrollments ce
+            WHERE ce.course_id = c.id
+              AND ce.student_id = $${studentIdIndex}
+              AND ce.status = 'enrolled'
+          )
+          OR
+          EXISTS (
+            SELECT 1
+            FROM course_audiences ca
+            WHERE ca.course_id = c.id
+              AND (UPPER(ca.branch) = $${values.length - 3} OR UPPER(ca.branch) = 'ALL')
+              AND (ca.semester = $${values.length - 2} OR ca.semester = 0)
+              AND (UPPER(ca.section) = $${values.length - 1} OR UPPER(ca.section) = 'ALL')
+              AND (ca.batch = $${values.length} OR ca.batch = 'ALL')
+          )
+          OR
+          NOT EXISTS (
+            SELECT 1
+            FROM course_audiences ca
+            WHERE ca.course_id = c.id
+          )
+        )`
+      );
+    } else {
+      filters.push(
+        `EXISTS (
           SELECT 1
-          FROM course_audiences ca
-          WHERE ca.course_id = c.id
-            AND (UPPER(ca.branch) = $${values.length - 4} OR UPPER(ca.branch) = 'ALL')
-            AND (ca.semester = $${values.length - 3} OR ca.semester = 0)
-            AND (UPPER(ca.section) = $${values.length - 2} OR UPPER(ca.section) = 'ALL')
-            AND (ca.batch = $${values.length - 1} OR ca.batch = 'ALL')
-        )
-        OR
-        NOT EXISTS (
-          SELECT 1
-          FROM course_audiences ca
-          WHERE ca.course_id = c.id
-        )
-      )`
-    );
+          FROM course_enrollments ce
+          WHERE ce.course_id = c.id
+            AND ce.student_id = $${studentIdIndex}
+            AND ce.status = 'enrolled'
+        )`
+      );
+    }
   }
 
   if (search) {
@@ -539,6 +587,9 @@ export const getCourseById = asyncHandler(async (req, res) => {
           a.is_mst,
           a.is_proctored,
           a.max_score,
+          a.target_batch,
+          a.target_year,
+          a.target_semester,
           a.created_at,
           COUNT(s.id)::int AS submissions_count
         FROM course_assignments a
@@ -597,7 +648,34 @@ export const getCourseById = asyncHandler(async (req, res) => {
       }));
     }
 
-    let assignments = assignmentsResult.rows.map((row) => mapAssignmentRow(row));
+    let assignmentsRows = assignmentsResult.rows;
+    if (req.currentUser.role === "student") {
+      const isEnrolledCheck = await client.query(
+        `SELECT 1 FROM course_enrollments WHERE course_id = $1 AND student_id = $2 AND status = 'enrolled'`,
+        [req.course.id, req.currentUser.id]
+      );
+      if (isEnrolledCheck.rows.length === 0) {
+        assignmentsRows = [];
+      } else if (req.roleProfile) {
+        const studentSem = Number(req.roleProfile.semester) || 1;
+        const studentYear =
+          studentSem <= 2 ? "1st Year" : studentSem <= 4 ? "2nd Year" : studentSem <= 6 ? "3rd Year" : "4th Year";
+        const studentBatch = req.roleProfile.batch;
+
+        assignmentsRows = assignmentsRows.filter((row) => {
+          const targetBatch = row.target_batch || "ALL";
+          const targetYear = row.target_year || "ALL";
+          const targetSemester = row.target_semester || "ALL";
+
+          if (targetBatch !== "ALL" && targetBatch !== studentBatch) return false;
+          if (targetYear !== "ALL" && targetYear !== studentYear) return false;
+          if (targetSemester !== "ALL" && String(targetSemester) !== String(studentSem)) return false;
+          return true;
+        });
+      }
+    }
+
+    let assignments = assignmentsRows.map((row) => mapAssignmentRow(row));
     if (req.currentUser.role === "student" && assignments.length > 0) {
       const submissionResult = await client.query(
         `

@@ -5,7 +5,8 @@ import {
   saveProgress,
   submitAttempt,
   getAssignmentRecords,
-  getAttemptDetails
+  getAttemptDetails,
+  getStudentExams
 } from "../controllers/assignment.controller.js";
 import {
   attachRoleProfile,
@@ -19,6 +20,9 @@ import { pool } from "../config/db.js";
 const assignmentRouter = Router();
 
 assignmentRouter.use(requireAuth, requireMongoUser, attachRoleProfile);
+
+// Fast dedicated endpoint for student exams portal (MUST be defined before /:assignmentId)
+assignmentRouter.get("/student/exams", getStudentExams);
 
 // Helper middleware to inject courseId from assignmentId for auth checks
 const attachCourseId = async (req, res, next) => {
