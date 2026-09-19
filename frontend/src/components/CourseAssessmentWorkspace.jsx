@@ -32,6 +32,35 @@ export default function CourseAssessmentWorkspace({
   const [runOutputs, setRunOutputs] = useState({});
   const [activeConsoleTabs, setActiveConsoleTabs] = useState({});
 
+  // Dynamic Test Countdown Timer (from start to end)
+  const [timeRemaining, setTimeRemaining] = useState(() => {
+    if (exam?.endRaw) {
+      const ms = new Date(exam.endRaw).getTime() - Date.now();
+      return ms > 0 ? Math.floor(ms / 1000) : 0;
+    }
+    return null;
+  });
+
+  useEffect(() => {
+    if (!exam?.endRaw) return;
+    const interval = setInterval(() => {
+      const ms = new Date(exam.endRaw).getTime() - Date.now();
+      setTimeRemaining(ms > 0 ? Math.floor(ms / 1000) : 0);
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [exam?.endRaw]);
+
+  function formatRemaining(totalSec) {
+    if (totalSec === null || totalSec === undefined) return null;
+    const hours = Math.floor(totalSec / 3600);
+    const mins = Math.floor((totalSec % 3600) / 60);
+    const secs = totalSec % 60;
+    if (hours > 0) {
+      return `${hours}h ${String(mins).padStart(2, "0")}m ${String(secs).padStart(2, "0")}s`;
+    }
+    return `${mins}m ${String(secs).padStart(2, "0")}s`;
+  }
+
   useEffect(() => {
     async function loadQuestions() {
       if (!assignmentId) {
@@ -321,11 +350,50 @@ export default function CourseAssessmentWorkspace({
             )}
           </div>
 
-          <div className="assessment-topbar-right">
-            {dueDate && (
-              <div className="assessment-due-tag font-red">
-                End Window: {dueDate}
+          <div className="assessment-topbar-right" style={{ display: "flex", alignItems: "center", gap: "0.65rem", flexWrap: "wrap" }}>
+            {exam?.durationMinutes && (
+              <div
+                style={{
+                  background: "rgba(59, 130, 246, 0.12)",
+                  border: "1px solid rgba(59, 130, 246, 0.3)",
+                  color: "#60a5fa",
+                  borderRadius: "8px",
+                  padding: "0.35rem 0.7rem",
+                  fontSize: "0.78rem",
+                  fontWeight: 600,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.35rem"
+                }}
+              >
+                <span>⏱️</span>
+                <span>Duration: {exam.durationMinutes} Mins</span>
               </div>
+            )}
+            {timeRemaining !== null ? (
+              <div
+                style={{
+                  background: timeRemaining <= 300 ? "rgba(239, 68, 68, 0.15)" : "rgba(16, 185, 129, 0.12)",
+                  border: timeRemaining <= 300 ? "1px solid rgba(239, 68, 68, 0.4)" : "1px solid rgba(16, 185, 129, 0.3)",
+                  color: timeRemaining <= 300 ? "#ef4444" : "#10b981",
+                  borderRadius: "8px",
+                  padding: "0.35rem 0.7rem",
+                  fontSize: "0.78rem",
+                  fontWeight: 700,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: "0.35rem"
+                }}
+              >
+                <span>⏳</span>
+                <span>Time Left: {timeRemaining === 0 ? "Time's up" : formatRemaining(timeRemaining)}</span>
+              </div>
+            ) : (
+              dueDate && (
+                <div className="assessment-due-tag font-red">
+                  End Window: {dueDate}
+                </div>
+              )
             )}
             <div className="assessment-action-buttons">
               <button

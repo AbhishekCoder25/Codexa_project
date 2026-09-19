@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { Link } from "react-router-dom";
 import { PlatformLayout } from "../../components/PlatformLayout";
 import { apiRequest } from "../../utils/api";
-import { getFacultySession } from "../../utils/session";
+import { getFacultySession, getAdminSession } from "../../utils/session";
 
 const BATCH_OPTIONS = [
   { value: "ALL", label: "All Batches (Open to All)" },
@@ -20,8 +20,9 @@ const YEAR_OPTIONS = [
   { value: "4th Year", label: "4th Year (Semesters 7 & 8)" }
 ];
 
-export default function FacultyExamsPage() {
-  const session = getFacultySession();
+export default function FacultyExamsPage({ role = "faculty" }) {
+  const isAdmin = role === "admin";
+  const session = isAdmin ? getAdminSession() : getFacultySession();
   const user = session?.user;
 
   const [courses, setCourses] = useState([]);
@@ -47,6 +48,15 @@ export default function FacultyExamsPage() {
   const [codingExamQuestions, setCodingExamQuestions] = useState([]);
   const [selectedQuestionId, setSelectedQuestionId] = useState("new");
 
+function calculateDurationMinutes(startStr, endStr) {
+  if (!startStr || !endStr) return null;
+  const start = new Date(startStr);
+  const end = new Date(endStr);
+  if (isNaN(start.getTime()) || isNaN(end.getTime())) return null;
+  const diffMinutes = Math.round((end.getTime() - start.getTime()) / 60000);
+  return diffMinutes > 0 ? diffMinutes : null;
+}
+
   // Form state for faculty to schedule test / MST (Step 1)
   const [scheduleForm, setScheduleForm] = useState({
     courseId: "",
@@ -56,7 +66,7 @@ export default function FacultyExamsPage() {
     isMst: true,
     startTime: "",
     endTime: "",
-    durationMinutes: 90,
+    durationMinutes: "",
     maxScore: 50,
     isProctored: true,
     targetBatch: "ALL",
@@ -72,7 +82,7 @@ export default function FacultyExamsPage() {
     isMst: true,
     startTime: "",
     endTime: "",
-    durationMinutes: 90,
+    durationMinutes: "",
     maxScore: 50,
     isProctored: true,
     targetBatch: "ALL",
@@ -148,7 +158,16 @@ export default function FacultyExamsPage() {
                 endRaw: end,
                 startTime: start ? start.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "Not Scheduled",
                 endTime: end ? end.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "TBA",
-                durationMinutes: item.durationMinutes || 90,
+                durationMinutes: (() => {
+                  let d = item.durationMinutes;
+                  if (start && end) {
+                    const diff = Math.round((end.getTime() - start.getTime()) / 60000);
+                    if (diff > 0 && (isMst || !d || d === 90)) {
+                      return diff;
+                    }
+                  }
+                  return d || 90;
+                })(),
                 totalMarks: item.maxScore || 100,
                 targetBatch: item.targetBatch || item.target_batch || "ALL",
                 targetYear: item.targetYear || item.target_year || "ALL",
@@ -269,7 +288,7 @@ export default function FacultyExamsPage() {
             startTime: scheduleForm.startTime ? new Date(scheduleForm.startTime).toISOString() : null,
             endTime: scheduleForm.endTime ? new Date(scheduleForm.endTime).toISOString() : null,
             dueDate: scheduleForm.endTime ? new Date(scheduleForm.endTime).toISOString() : null,
-            durationMinutes: Number(scheduleForm.durationMinutes),
+            durationMinutes: Number(scheduleForm.durationMinutes) || calculateDurationMinutes(scheduleForm.startTime, scheduleForm.endTime) || 90,
             maxScore: Number(scheduleForm.maxScore),
             isMst: scheduleForm.isMst,
             isProctored: scheduleForm.isProctored,
@@ -301,7 +320,7 @@ export default function FacultyExamsPage() {
         isMst: true,
         startTime: "",
         endTime: "",
-        durationMinutes: 90,
+        durationMinutes: "",
         maxScore: 50,
         isProctored: true,
         targetBatch: "ALL",
@@ -323,6 +342,11 @@ export default function FacultyExamsPage() {
 
   function openEditModal(exam) {
     setShowEditModal(exam);
+    const calcFromRaw = (exam.startRaw && exam.endRaw)
+      ? Math.round((exam.endRaw.getTime() - exam.startRaw.getTime()) / 60000)
+      : null;
+    const resolvedDuration = calcFromRaw && calcFromRaw > 0 ? calcFromRaw : (exam.durationMinutes || 90);
+
     setEditForm({
       title: exam.title,
       description: exam.description,
@@ -330,7 +354,7 @@ export default function FacultyExamsPage() {
       isMst: exam.isMst,
       startTime: exam.startRaw ? new Date(exam.startRaw.getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "",
       endTime: exam.endRaw ? new Date(exam.endRaw.getTime() - new Date().getTimezoneOffset() * 60000).toISOString().slice(0, 16) : "",
-      durationMinutes: exam.durationMinutes,
+      durationMinutes: resolvedDuration,
       maxScore: exam.totalMarks,
       isProctored: exam.proctored,
       targetBatch: exam.targetBatch || "ALL",
@@ -612,7 +636,7 @@ export default function FacultyExamsPage() {
   const totalExamsCount = exams.length;
 
   return (
-    <PlatformLayout role="faculty" activeItem="/faculty/exams">
+    <PlatformLayout role={isAdmin ? "admin" : "faculty"} activeItem={isAdmin ? "/admin/exams" : "/faculty/exams"}>
       <div className="lc-dashboard-container" style={{ maxWidth: "1280px", margin: "0 auto", padding: "1.5rem 1rem" }}>
         
         {/* Modern Top Header Card */}
@@ -639,11 +663,11 @@ export default function FacultyExamsPage() {
                   letterSpacing: "0.06em",
                   textTransform: "uppercase"
                 }}>
-                  Faculty Portal • Examinations & MST
+                  {isAdmin ? "Admin Controller • Examinations & MST" : "Faculty Portal • Examinations & MST"}
                 </span>
               </div>
               <h1 style={{ fontSize: "1.85rem", fontWeight: 800, color: "var(--lc-text-primary)", margin: 0, letterSpacing: "-0.02em" }}>
-                MST & Test Papers Management
+                {isAdmin ? "Admin MST & Examination Manager" : "MST & Test Papers Management"}
               </h1>
               <p style={{ color: "var(--lc-text-muted)", fontSize: "0.9rem", margin: "0.4rem 0 0 0", maxWidth: "680px" }}>
                 Schedule tests with target student batch/year audience, add coding problems with automated test cases, and edit parameters.
@@ -1312,22 +1336,38 @@ export default function FacultyExamsPage() {
 
                 <div className="lc-form-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
                   <div className="lc-form-group">
-                    <label className="lc-input-label lc-input-label-required">Start Date & Time</label>
+                    <label className="lc-input-label lc-input-label-required">Start Date & Time (When to Start)</label>
                     <input
                       type="datetime-local"
                       className="lc-form-input"
                       value={scheduleForm.startTime}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, startTime: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const calc = calculateDurationMinutes(val, scheduleForm.endTime);
+                        setScheduleForm((prev) => ({
+                          ...prev,
+                          startTime: val,
+                          durationMinutes: calc !== null ? calc : prev.durationMinutes
+                        }));
+                      }}
                       required
                     />
                   </div>
                   <div className="lc-form-group">
-                    <label className="lc-input-label lc-input-label-required">End Date & Time</label>
+                    <label className="lc-input-label lc-input-label-required">End Date & Time (When to End)</label>
                     <input
                       type="datetime-local"
                       className="lc-form-input"
                       value={scheduleForm.endTime}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, endTime: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const calc = calculateDurationMinutes(scheduleForm.startTime, val);
+                        setScheduleForm((prev) => ({
+                          ...prev,
+                          endTime: val,
+                          durationMinutes: calc !== null ? calc : prev.durationMinutes
+                        }));
+                      }}
                       required
                     />
                   </div>
@@ -1335,15 +1375,31 @@ export default function FacultyExamsPage() {
 
                 <div className="lc-form-row" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem" }}>
                   <div className="lc-form-group">
-                    <label className="lc-input-label lc-input-label-required">Duration (Minutes)</label>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
+                      <label className="lc-input-label lc-input-label-required" style={{ margin: 0 }}>Duration</label>
+                      {scheduleForm.startTime && scheduleForm.endTime && scheduleForm.durationMinutes ? (
+                        <span style={{ fontSize: "0.72rem", color: "#10b981", fontWeight: 600 }}>
+                          🔒 Auto-calculated ({scheduleForm.durationMinutes}m)
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: "0.72rem", color: "var(--lc-text-muted)" }}>
+                          🔒 Computed from start &amp; end
+                        </span>
+                      )}
+                    </div>
                     <input
-                      type="number"
-                      min="15"
-                      max="300"
+                      type="text"
+                      readOnly
+                      placeholder="Auto-calculated from start & end time"
                       className="lc-form-input"
-                      value={scheduleForm.durationMinutes}
-                      onChange={(e) => setScheduleForm({ ...scheduleForm, durationMinutes: e.target.value })}
-                      required
+                      value={scheduleForm.durationMinutes ? `${scheduleForm.durationMinutes} Minutes (Locked)` : ""}
+                      style={{
+                        background: "rgba(255, 255, 255, 0.05)",
+                        cursor: "not-allowed",
+                        color: "var(--lc-text-primary)",
+                        border: "1px solid var(--lc-border)"
+                      }}
+                      title="Duration is automatically computed from the start and end time and cannot be manually changed"
                     />
                   </div>
                   <div className="lc-form-group">
@@ -1525,22 +1581,38 @@ export default function FacultyExamsPage() {
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
                   <div className="lc-form-group">
-                    <label className="lc-input-label">Start Date & Time</label>
+                    <label className="lc-input-label">Start Date & Time (When to Start)</label>
                     <input
                       type="datetime-local"
                       className="lc-form-input"
                       value={editForm.startTime}
-                      onChange={(e) => setEditForm({ ...editForm, startTime: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const calc = calculateDurationMinutes(val, editForm.endTime);
+                        setEditForm((prev) => ({
+                          ...prev,
+                          startTime: val,
+                          durationMinutes: calc !== null ? calc : prev.durationMinutes
+                        }));
+                      }}
                       required
                     />
                   </div>
                   <div className="lc-form-group">
-                    <label className="lc-input-label">End Date & Time</label>
+                    <label className="lc-input-label">End Date & Time (When to End)</label>
                     <input
                       type="datetime-local"
                       className="lc-form-input"
                       value={editForm.endTime}
-                      onChange={(e) => setEditForm({ ...editForm, endTime: e.target.value })}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const calc = calculateDurationMinutes(editForm.startTime, val);
+                        setEditForm((prev) => ({
+                          ...prev,
+                          endTime: val,
+                          durationMinutes: calc !== null ? calc : prev.durationMinutes
+                        }));
+                      }}
                       required
                     />
                   </div>
@@ -1548,15 +1620,31 @@ export default function FacultyExamsPage() {
 
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "1rem", marginBottom: "1rem" }}>
                   <div className="lc-form-group">
-                    <label className="lc-input-label">Duration (Minutes)</label>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "0.25rem" }}>
+                      <label className="lc-input-label" style={{ margin: 0 }}>Duration</label>
+                      {editForm.startTime && editForm.endTime && editForm.durationMinutes ? (
+                        <span style={{ fontSize: "0.72rem", color: "#10b981", fontWeight: 600 }}>
+                          🔒 Auto-calculated ({editForm.durationMinutes}m)
+                        </span>
+                      ) : (
+                        <span style={{ fontSize: "0.72rem", color: "var(--lc-text-muted)" }}>
+                          🔒 Computed from start &amp; end
+                        </span>
+                      )}
+                    </div>
                     <input
-                      type="number"
-                      min="15"
-                      max="300"
+                      type="text"
+                      readOnly
+                      placeholder="Auto-calculated from start & end time"
                       className="lc-form-input"
-                      value={editForm.durationMinutes}
-                      onChange={(e) => setEditForm({ ...editForm, durationMinutes: e.target.value })}
-                      required
+                      value={editForm.durationMinutes ? `${editForm.durationMinutes} Minutes (Locked)` : ""}
+                      style={{
+                        background: "rgba(255, 255, 255, 0.05)",
+                        cursor: "not-allowed",
+                        color: "var(--lc-text-primary)",
+                        border: "1px solid var(--lc-border)"
+                      }}
+                      title="Duration is automatically computed from the start and end time and cannot be manually changed"
                     />
                   </div>
                   <div className="lc-form-group">

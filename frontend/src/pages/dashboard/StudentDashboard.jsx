@@ -1,7 +1,6 @@
 import { useEffect, useState, useMemo } from "react";
 import { Link } from "react-router-dom";
 import { PlatformLayout } from "../../components/PlatformLayout";
-import SubmissionHeatmap from "../../components/SubmissionHeatmap";
 import { getStudentSession } from "../../utils/session";
 import { apiRequest } from "../../utils/api";
 
@@ -31,10 +30,11 @@ export default function StudentDashboard() {
       setLoading(true);
 
       try {
-        const [coursesRes, problemsRes, progressRes] = await Promise.allSettled([
-          apiRequest("/courses", {}, session.token),
+        const [coursesRes, problemsRes, progressRes, examsRes] = await Promise.allSettled([
+          apiRequest("/courses?enrolledOnly=true", {}, session.token),
           apiRequest("/problems", {}, session.token),
-          apiRequest(`/submissions/student/${user?.id || ""}/progress`, {}, session.token)
+          apiRequest(`/submissions/student/${user?.id || ""}/progress`, {}, session.token),
+          apiRequest("/assignments/student/exams", {}, session.token)
         ]);
 
         if (isMounted) {
@@ -48,25 +48,9 @@ export default function StudentDashboard() {
             setProgress(progressRes.value);
           }
 
-          // Fetch exams for enrolled courses
-          const examList = [];
-          for (const course of fetchedCourses.slice(0, 4)) {
-            try {
-              const assignments = await apiRequest(`/courses/${course.id}/assignments`, {}, session.token);
-              if (Array.isArray(assignments)) {
-                for (const item of assignments) {
-                  examList.push({
-                    ...item,
-                    courseCode: course.code,
-                    courseTitle: course.title
-                  });
-                }
-              }
-            } catch {
-              // ignore course assignment fetch failure
-            }
+          if (examsRes.status === "fulfilled" && Array.isArray(examsRes.value?.exams)) {
+            setExams(examsRes.value.exams);
           }
-          setExams(examList);
         }
       } catch (err) {
         console.error("Failed to load student dashboard data:", err);
@@ -511,24 +495,6 @@ export default function StudentDashboard() {
           </div>
         </div>
 
-        {/* FULL-WIDTH HEATMAP (LeetCode / GitHub Activity Style) */}
-        <div style={{
-          background: "var(--lc-card-bg)",
-          border: "1px solid var(--lc-border)",
-          borderRadius: "16px",
-          padding: "1.5rem 2rem",
-          boxShadow: "0 4px 20px rgba(0, 0, 0, 0.15)"
-        }}>
-          <div style={{ marginBottom: "1.25rem" }}>
-            <h2 style={{ fontSize: "1.2rem", fontWeight: 700, color: "var(--lc-text-primary)", margin: 0 }}>
-              🔥 Submission Activity & Streak Calendar
-            </h2>
-            <p style={{ fontSize: "0.8rem", color: "var(--lc-text-muted)", margin: "0.2rem 0 0 0" }}>
-              Year-round daily coding consistency and submission intensity
-            </p>
-          </div>
-          <SubmissionHeatmap session={session} />
-        </div>
 
         {/* FULL-WIDTH RECOMMENDED PRACTICE PROBLEM SET */}
         <div style={{

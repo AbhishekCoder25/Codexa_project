@@ -33,7 +33,7 @@ async function saveProblemTestCases(client, problemId, testCases, isSample) {
 }
 
 function isStudentEligibleForAssignment(studentProfile, assignment) {
-  if (!studentProfile) return true;
+  if (!studentProfile) return false;
 
   const targetBatch = assignment.target_batch || assignment.targetBatch || "ALL";
   const targetYear = assignment.target_year || assignment.targetYear || "ALL";
@@ -44,11 +44,11 @@ function isStudentEligibleForAssignment(studentProfile, assignment) {
   }
 
   const studentSem = Number(studentProfile.semester) || 1;
-  if (targetYear !== "ALL") {
-    if (targetYear === "1st Year" && (studentSem < 1 || studentSem > 2)) return false;
-    if (targetYear === "2nd Year" && (studentSem < 3 || studentSem > 4)) return false;
-    if (targetYear === "3rd Year" && (studentSem < 5 || studentSem > 6)) return false;
-    if (targetYear === "4th Year" && (studentSem < 7 || studentSem > 8)) return false;
+  const studentYear =
+    studentSem <= 2 ? "1st Year" : studentSem <= 4 ? "2nd Year" : studentSem <= 6 ? "3rd Year" : "4th Year";
+
+  if (targetYear !== "ALL" && targetYear !== studentYear) {
+    return false;
   }
 
   if (targetSemester !== "ALL" && String(targetSemester) !== String(studentSem)) {
@@ -98,6 +98,19 @@ export const createAssignment = asyncHandler(async (req, res) => {
     const safeYear = targetYear?.trim() || 'ALL';
     const safeSemester = targetSemester?.trim() || 'ALL';
 
+    let finalDuration = Number(durationMinutes);
+    if (startVal && endVal) {
+      const s = new Date(startVal).getTime();
+      const e = new Date(endVal).getTime();
+      if (!isNaN(s) && !isNaN(e) && e > s) {
+        const diff = Math.round((e - s) / 60000);
+        if (!finalDuration || finalDuration === 90 || Boolean(isMst)) {
+          finalDuration = diff;
+        }
+      }
+    }
+    finalDuration = finalDuration > 0 ? finalDuration : 90;
+
     // 1. Create Assignment
     const assignmentResult = await client.query(
       `
@@ -117,7 +130,7 @@ export const createAssignment = asyncHandler(async (req, res) => {
         startVal,
         endVal,
         timeLimitMinutes || null,
-        Number(durationMinutes) || 90,
+        finalDuration,
         Number(maxScore) || 100,
         status || 'published',
         Boolean(isMst),
@@ -231,8 +244,17 @@ export const getAssignment = asyncHandler(async (req, res) => {
 
     const assignment = assignmentResult.rows[0];
 
-    // Check student audience eligibility
+    // Check student audience eligibility and enrollment
     if (req.currentUser.role === 'student') {
+      const enrollCheck = await pool.query(
+        `SELECT 1 FROM course_enrollments WHERE course_id = $1 AND student_id = $2 AND status = 'enrolled'`,
+        [assignment.course_id, req.currentUser.id]
+      );
+      if (enrollCheck.rows.length === 0) {
+        return res.status(403).json({
+          message: "You must be enrolled in this course to access this examination."
+        });
+      }
       if (!isStudentEligibleForAssignment(req.roleProfile, assignment)) {
         return res.status(403).json({
           message: `This examination is restricted to Batch ${assignment.target_batch || 'assigned'} / ${assignment.target_year || 'specified year'} students.`
@@ -318,8 +340,22 @@ export const getAssignment = asyncHandler(async (req, res) => {
         }
     });
 
+    let durationMinutes = assignment.duration_minutes;
+    if (assignment.start_time && assignment.end_time) {
+      const s = new Date(assignment.start_time).getTime();
+      const e = new Date(assignment.end_time).getTime();
+      if (!isNaN(s) && !isNaN(e) && e > s) {
+        const diff = Math.round((e - s) / 60000);
+        if (assignment.is_mst || !durationMinutes || durationMinutes === 90) {
+          durationMinutes = diff;
+        }
+      }
+    }
+
     res.json({
       ...assignment,
+      duration_minutes: durationMinutes || 90,
+      durationMinutes: durationMinutes || 90,
       targetBatch: assignment.target_batch || "ALL",
       targetYear: assignment.target_year || "ALL",
       targetSemester: assignment.target_semester || "ALL",
@@ -369,6 +405,13 @@ export const listAssignmentsForCourse = asyncHandler(async (req, res) => {
 
   let filteredRows = assignmentResult.rows;
   if (req.currentUser.role === 'student') {
+    const enrollCheck = await pool.query(
+      `SELECT 1 FROM course_enrollments WHERE course_id = $1 AND student_id = $2 AND status = 'enrolled'`,
+      [req.course.id, req.currentUser.id]
+    );
+    if (enrollCheck.rows.length === 0) {
+      return res.json([]);
+    }
     filteredRows = filteredRows.filter(row => isStudentEligibleForAssignment(req.roleProfile, row));
   }
 
@@ -383,7 +426,20 @@ export const listAssignmentsForCourse = asyncHandler(async (req, res) => {
       startTime: row.start_time,
       endTime: row.end_time,
       timeLimitMinutes: row.time_limit_minutes,
-      durationMinutes: row.duration_minutes,
+      durationMinutes: (() => {
+        let duration = row.duration_minutes;
+        if (row.start_time && row.end_time) {
+          const s = new Date(row.start_time).getTime();
+          const e = new Date(row.end_time).getTime();
+          if (!isNaN(s) && !isNaN(e) && e > s) {
+            const diff = Math.round((e - s) / 60000);
+            if (row.is_mst || !duration || duration === 90) {
+              return diff;
+            }
+          }
+        }
+        return duration || 90;
+      })(),
       maxScore: row.max_score,
       status: row.status,
       isMst: row.is_mst,
@@ -396,6 +452,185 @@ export const listAssignmentsForCourse = asyncHandler(async (req, res) => {
       attempt: req.currentUser.role === 'student' ? attemptsMap.get(row.id) || null : undefined
     }))
   );
+});
+
+export const getStudentExams = asyncHandler(async (req, res) => {
+  if (req.currentUser.role !== "student") {
+    return res.status(403).json({ message: "Only students can access this examination portal endpoint." });
+  }
+
+  const queryResult = await pool.query(
+    `
+      SELECT 
+        ca.id,
+        ca.course_id,
+        ca.title,
+        ca.description,
+        ca.assignment_type,
+        ca.start_date,
+        ca.due_date,
+        ca.start_time,
+        ca.end_time,
+        ca.time_limit_minutes,
+        ca.duration_minutes,
+        ca.max_score,
+        ca.status,
+        ca.is_mst,
+        ca.is_proctored,
+        ca.target_batch,
+        ca.target_year,
+        ca.target_semester,
+        ca.created_at,
+        c.code as course_code,
+        c.title as course_title,
+        (
+          SELECT u.full_name 
+          FROM course_faculty cf 
+          JOIN users u ON u.id = cf.faculty_id 
+          WHERE cf.course_id = c.id 
+          LIMIT 1
+        ) as instructor_name,
+        asa.id as attempt_id,
+        asa.status as attempt_status,
+        asa.total_score as attempt_score,
+        asa.started_at as attempt_started_at,
+        asa.submitted_at as attempt_submitted_at,
+        (
+          SELECT COUNT(*)::int 
+          FROM assignment_questions aq 
+          WHERE aq.assignment_id = ca.id
+        ) as questions_count
+      FROM course_assignments ca
+      JOIN course_enrollments ce 
+        ON ce.course_id = ca.course_id 
+       AND ce.student_id = $1 
+       AND ce.status = 'enrolled'
+      JOIN courses c 
+        ON c.id = ca.course_id
+      LEFT JOIN assignment_student_attempts asa 
+        ON asa.assignment_id = ca.id 
+       AND asa.student_id = $1
+      ORDER BY ca.start_time ASC NULLS LAST, ca.due_date ASC NULLS LAST, ca.created_at DESC
+    `,
+    [req.currentUser.id]
+  );
+
+  const coursesMap = new Map();
+  const exams = [];
+  const now = new Date();
+
+  for (const row of queryResult.rows) {
+    if (!coursesMap.has(row.course_id)) {
+      coursesMap.set(row.course_id, {
+        id: row.course_id,
+        code: row.course_code || "COURSE",
+        title: row.course_title || "Course",
+        instructor: row.instructor_name || "Faculty Instructor"
+      });
+    }
+
+    if (req.roleProfile && !isStudentEligibleForAssignment(req.roleProfile, row)) {
+      continue;
+    }
+
+    const start = row.start_time ? new Date(row.start_time) : (row.due_date ? new Date(row.due_date) : null);
+    const end = row.end_time ? new Date(row.end_time) : (row.due_date ? new Date(row.due_date) : null);
+
+    const isMst = Boolean(
+      row.is_mst ||
+      (row.title && (row.title.toLowerCase().includes("mst") || row.title.toLowerCase().includes("mid-semester")))
+    );
+    const isQuiz = Boolean(
+      row.title && (row.title.toLowerCase().includes("quiz") || row.title.toLowerCase().includes("unit"))
+    );
+
+    const isCompleted = row.attempt_status === "submitted" || row.attempt_status === "graded";
+
+    let status = "upcoming";
+    if (isCompleted) {
+      status = "completed";
+    } else if (start && end) {
+      if (now >= start && now <= end) {
+        status = "live";
+      } else if (now > end) {
+        status = "completed";
+      } else {
+        status = "upcoming";
+      }
+    } else if (end && now <= end) {
+      status = "live";
+    }
+
+    let durationMinutes = row.duration_minutes;
+    if (start && end) {
+      const diff = Math.round((end.getTime() - start.getTime()) / 60000);
+      if (diff > 0 && (isMst || !durationMinutes || durationMinutes === 90)) {
+        durationMinutes = diff;
+      }
+    }
+    durationMinutes = durationMinutes > 0 ? durationMinutes : 90;
+
+    exams.push({
+      id: row.id,
+      courseId: row.course_id,
+      type: isMst ? "mst" : isQuiz ? "quiz" : (row.assignment_type || "assignment"),
+      isMst,
+      title: row.title,
+      description: row.description || "Official institutional paper.",
+      courseCode: row.course_code || "COURSE",
+      courseTitle: row.course_title || "Course",
+      instructor: row.instructor_name || "Faculty Instructor",
+      status,
+      startRaw: start,
+      endRaw: end,
+      startTime: start ? start.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "Scheduled",
+      endTime: end ? end.toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" }) : "TBA",
+      durationMinutes,
+      totalMarks: row.max_score || 100,
+      targetBatch: row.target_batch || "ALL",
+      targetYear: row.target_year || "ALL",
+      targetSemester: row.target_semester || "ALL",
+      questionsCount: row.questions_count || 0,
+      score: row.attempt_score ?? null,
+      attemptStatus: row.attempt_status || null,
+      submittedAt: row.attempt_submitted_at
+        ? new Date(row.attempt_submitted_at).toLocaleString("en-IN", { dateStyle: "medium", timeStyle: "short" })
+        : null,
+      proctored: row.is_proctored !== undefined ? row.is_proctored : true,
+      instructions: [
+        "Ensure a stable internet connection before starting the examination.",
+        "Full-screen tab switching is monitored. Do not exit full-screen during timed paper.",
+        "Your code submissions and answers are auto-saved and recorded directly in the server database."
+      ]
+    });
+  }
+
+  // Also include any other enrolled courses so filter dropdowns have the complete list
+  const enrolledCoursesResult = await pool.query(
+    `
+      SELECT c.id, c.code, c.title
+      FROM course_enrollments ce
+      JOIN courses c ON c.id = ce.course_id
+      WHERE ce.student_id = $1 AND ce.status = 'enrolled'
+      ORDER BY c.code ASC
+    `,
+    [req.currentUser.id]
+  );
+
+  for (const c of enrolledCoursesResult.rows) {
+    if (!coursesMap.has(c.id)) {
+      coursesMap.set(c.id, {
+        id: c.id,
+        code: c.code || "COURSE",
+        title: c.title || "Course"
+      });
+    }
+  }
+
+  res.json({
+    exams,
+    courses: Array.from(coursesMap.values())
+  });
 });
 
 export const addAssignmentQuestion = asyncHandler(async (req, res) => {
@@ -668,6 +903,15 @@ export const startAttempt = asyncHandler(async (req, res) => {
     }
 
     if (req.currentUser.role === 'student') {
+      const enrollCheck = await pool.query(
+        `SELECT 1 FROM course_enrollments WHERE course_id = $1 AND student_id = $2 AND status = 'enrolled'`,
+        [assignmentResult.rows[0].course_id, req.currentUser.id]
+      );
+      if (enrollCheck.rows.length === 0) {
+        return res.status(403).json({
+          message: "You must be enrolled in this course to take this examination."
+        });
+      }
       if (!isStudentEligibleForAssignment(req.roleProfile, assignmentResult.rows[0])) {
         return res.status(403).json({
           message: "You are not eligible to start this examination paper."
@@ -832,6 +1076,20 @@ export const updateAssignment = asyncHandler(async (req, res) => {
   const allowedTypes = ['coding', 'theory', 'mst', 'quiz', 'assignment'];
   const safeType = type && allowedTypes.includes(type.trim().toLowerCase()) ? type.trim().toLowerCase() : null;
 
+  let finalDuration = durationMinutes ? Number(durationMinutes) : null;
+  const startVal = startTime || null;
+  const endVal = endTime || dueDate || null;
+  if (startVal && endVal) {
+    const s = new Date(startVal).getTime();
+    const e = new Date(endVal).getTime();
+    if (!isNaN(s) && !isNaN(e) && e > s) {
+      const diff = Math.round((e - s) / 60000);
+      if (!finalDuration || finalDuration === 90 || Boolean(isMst)) {
+        finalDuration = diff;
+      }
+    }
+  }
+
   const result = await pool.query(
     `
       UPDATE course_assignments
@@ -859,7 +1117,7 @@ export const updateAssignment = asyncHandler(async (req, res) => {
       dueDate || endTime || null,
       startTime || null,
       endTime || dueDate || null,
-      durationMinutes ? Number(durationMinutes) : null,
+      finalDuration,
       maxScore ? Number(maxScore) : null,
       isMst !== undefined ? Boolean(isMst) : null,
       isProctored !== undefined ? Boolean(isProctored) : null,
